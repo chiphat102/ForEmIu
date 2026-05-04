@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Excel Extractor & Filter</title>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            padding: 30px;
+            margin: 0;
+        }
+        .container {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            max-width: 1300px;
+            margin: 0 auto;
+        }
+        h2 { color: #2c3e50; margin-top: 0; }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        input[type="file"], select, button {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover { background-color: #2980b9; }
+        #downloadBtn { background-color: #27ae60; display: none; }
+        #downloadBtn:hover { background-color: #219150; }
+        
+        .table-container {
+            overflow-x: auto;
+            max-height: 500px;
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            display: none; 
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        th, td {
+            padding: 10px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+        td {
+            white-space: normal; /* Let the descriptions wrap if they are long */
+        }
+        th {
+            background-color: #f8f9fa;
+            position: sticky;
+            top: 0;
+            color: #2c3e50;
+            z-index: 10;
+        }
+        #status { font-weight: bold; margin-left: 10px; }
+        .error { color: #e74c3c; }
+        .success { color: #27ae60; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>Excel Extractor & Client Filter</h2>
+        
+        <div class="controls">
+            <input type="file" id="fileInput" accept=".xls,.xlsx" />
+            <button onclick="processExcel()">1. Load & Process Data</button>
+            <span id="status"></span>
+        </div>
+
+        <div class="controls" id="filterSection" style="display: none;">
+            <select id="customerSelect" onchange="filterTable()">
+                <option value="ALL">-- Show All Customers --</option>
+            </select>
+            <button id="downloadBtn" onclick="downloadFilteredExcel()">2. Download Selected Customer to Excel</button>
+        </div>
+
+        <div class="table-container" id="tableContainer">
+            <table id="dataTable">
+                <thead>
+                    <tr>
+                        <th>Ngày CT</th>
+                        <th>Ngày HĐ</th>
+                        <th>Mã CT</th>
+                        <th>Số HĐ</th>
+                        <th>Tên NCC (Khách)</th>
+                        <th>Diễn giải chính</th>
+                        <th>Diễn giải Anh</th>
+                        <th>Diễn giải Việt</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let globalProcessedData = [];
+        let uniqueCustomers = new Set();
+        let customerColumnKey = "";
+
+        function processExcel() {
+            const fileInput = document.getElementById('fileInput');
+            const statusMessage = document.getElementById('status');
+
+            if (fileInput.files.length === 0) {
+                statusMessage.textContent = "Please upload an Excel file.";
+                statusMessage.className = "error";
+                return;
+            }
+
+            statusMessage.textContent = "Processing...";
+            statusMessage.className = "";
+            
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    
+                    // raw: false forces SheetJS to read formatted text (like dates) rather than raw serial numbers
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
+                    if (jsonData.length === 0) throw new Error("Spreadsheet is empty");
+
+                    const headers = Object.keys(jsonData[0]);
+                    
+                    // Find specific columns by name, or fallback to their standard positions (A=0, B=1, C=2, D=3, G=6)
+                    const colB_NgayCT = headers.find(h => h.toLowerCase().includes('ngày c.từ')) || headers[1];
+                    const colC_MaCT   = headers.find(h => h.toLowerCase().includes('số c.từ') || h.toLowerCase().includes('mã ct')) || headers[2];
+                    const colD_NgayHD = headers.find(h => h.toLowerCase().includes('ngày hđ')) || headers[3];
+                    
+                    customerColumnKey = headers.find(h => h.toLowerCase().includes('tên khách')) || headers[6] || headers[0];
+
+                    globalProcessedData = [];
+                    uniqueCustomers.clear();
+
+                    jsonData.forEach(row => {
+                        // Grab core columns directly
+                        let ngayCT = row[colB_NgayCT] || "";
+                        let maCT = row[colC_MaCT] || "";
+                        let ngayHD_col = row[colD_NgayHD] || "";
+
+                        let dienGiai = row['Diễn giải'] || "";
+                        let tenKhach = row[customerColumnKey] || "";
+                        let tenNCC = row['Tên NCC'] || tenKhach; 
+
+                        if (tenKhach && typeof tenKhach === 'string' && tenKhach.trim() !== "") {
+                            uniqueCustomers.add(tenKhach.trim());
+                        }
+
+                        let soHD = "";
+                        let vietnamese = "";
+                        let english = "";
+                        let dienGiaiChinh = dienGiai;
+
+                        if (dienGiai && typeof dienGiai === 'string') {
+                            // 1. Extract Invoice Number (Improved regex to target digits and skip _, #, -)
+                            const invoiceRegex = /(?:HĐ|Hóa đơn|Invoice|Inv|Số)[\s:\-_#]*(\d+)/i;
+                            const invoiceMatch = dienGiai.match(invoiceRegex);
+                            soHD = invoiceMatch ? invoiceMatch[1] : '';
+
+                            // 2. Remove invoice portion AND everything after it
+                            let textWithoutInvoice = dienGiai.replace(/[_\s]*(?:HĐ|Hóa đơn|Invoice|Inv|Số)[\s:\-_#]*\d+.*/i, '').trim();
+                            textWithoutInvoice = textWithoutInvoice.replace(/[\(\)\[\]]/g, '').trim(); 
+
+                            // 3. Separate languages (English first, Vietnamese second)
+                            if (textWithoutInvoice.includes('/')) {
+                                const parts = textWithoutInvoice.split('/');
+                                english = parts[0].trim(); 
+                                vietnamese = parts.slice(1).join('/').trim(); 
+                            } else if (textWithoutInvoice.includes('\n')) {
+                                const parts = textWithoutInvoice.split('\n');
+                                english = parts[0].trim();
+                                vietnamese = parts.slice(1).join(' ').trim();
+                            } else {
+                                vietnamese = textWithoutInvoice;
+                                english = "";
+                            }
+                        }
+
+                        // Store data in the exact ordered requested
+                        globalProcessedData.push({
+                            'Ngày CT': ngayCT,
+                            'Ngày HĐ': ngayHD_col,
+                            'Mã CT': maCT,
+                            'Số HĐ': soHD,
+                            'Tên NCC (Khách)': tenNCC,
+                            'Diễn giải chính': dienGiaiChinh,
+                            'Diễn giải Anh': english,
+                            'Diễn giải Việt': vietnamese,
+                            '_RawCustomerName': tenKhach.trim() 
+                        });
+                    });
+
+                    populateDropdown();
+                    renderTable(globalProcessedData);
+                    
+                    document.getElementById('filterSection').style.display = 'flex';
+                    document.getElementById('tableContainer').style.display = 'block';
+                    document.getElementById('downloadBtn').style.display = 'inline-block';
+                    
+                    statusMessage.textContent = "Data loaded successfully!";
+                    statusMessage.className = "success";
+
+                } catch (error) {
+                    console.error(error);
+                    statusMessage.textContent = "Error processing file. Ensure column names match.";
+                    statusMessage.className = "error";
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function populateDropdown() {
+            const select = document.getElementById('customerSelect');
+            select.innerHTML = '<option value="ALL">-- Show All Customers --</option>';
+            
+            let sortedCustomers = Array.from(uniqueCustomers).sort();
+            
+            sortedCustomers.forEach(customer => {
+                let option = document.createElement('option');
+                option.value = customer;
+                option.textContent = customer;
+                select.appendChild(option);
+            });
+        }
+
+        function filterTable() {
+            const selectedCustomer = document.getElementById('customerSelect').value;
+            let filteredData = globalProcessedData;
+
+            if (selectedCustomer !== "ALL") {
+                filteredData = globalProcessedData.filter(row => row['_RawCustomerName'] === selectedCustomer);
+            }
+
+            renderTable(filteredData);
+        }
+
+        function renderTable(data) {
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = ""; 
+
+            const displayData = data.slice(0, 200); 
+
+            displayData.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${row['Ngày CT']}</td>
+                    <td>${row['Ngày HĐ']}</td>
+                    <td>${row['Mã CT']}</td>
+                    <td>${row['Số HĐ']}</td>
+                    <td>${row['Tên NCC (Khách)']}</td>
+                    <td>${row['Diễn giải chính']}</td>
+                    <td>${row['Diễn giải Anh']}</td>
+                    <td>${row['Diễn giải Việt']}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function downloadFilteredExcel() {
+            const selectedCustomer = document.getElementById('customerSelect').value;
+            let dataToExport = globalProcessedData;
+
+            if (selectedCustomer !== "ALL") {
+                dataToExport = globalProcessedData.filter(row => row['_RawCustomerName'] === selectedCustomer);
+            }
+
+            if (dataToExport.length === 0) {
+                alert("No data available to download for this selection.");
+                return;
+            }
+
+            // Map strict export order
+            const finalExportData = dataToExport.map(row => ({
+                'Ngày CT': row['Ngày CT'],
+                'Ngày HĐ': row['Ngày HĐ'],
+                'Mã CT': row['Mã CT'],
+                'Số HĐ': row['Số HĐ'],
+                'Tên NCC (Khách)': row['Tên NCC (Khách)'],
+                'Diễn giải chính': row['Diễn giải chính'],
+                'Diễn giải Anh': row['Diễn giải Anh'],
+                'Diễn giải Việt': row['Diễn giải Việt']
+            }));
+
+            const worksheet = XLSX.utils.json_to_sheet(finalExportData);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Filtered Data");
+            
+            const safeName = selectedCustomer === "ALL" ? "All_Customers" : selectedCustomer.replace(/[^a-z0-9\s]/gi, '').replace(/\s+/g, '_');
+            XLSX.writeFile(workbook, `Filtered_${safeName}.xlsx`);
+        }
+    </script>
+</body>
+</html>
