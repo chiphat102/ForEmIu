@@ -197,18 +197,59 @@
                             textWithoutInvoice = textWithoutInvoice.replace(/[\s\-_]+$/, '').trim();
                             textWithoutInvoice = textWithoutInvoice.replace(/[\(\)\[\]]/g, '').trim(); 
 
-                            // 3. Separate languages
+                            // 3. Separate languages smartly (Ignoring dates)
+                            let part1 = textWithoutInvoice;
+                            let part2 = "";
+
                             if (textWithoutInvoice.includes('/')) {
-                                const parts = textWithoutInvoice.split('/');
-                                english = parts[0].trim(); 
-                                vietnamese = parts.slice(1).join('/').trim(); 
+                                let parts = textWithoutInvoice.split('/');
+                                let firstGroup = [];
+                                let secondGroup = [];
+                                let foundSplit = false;
+
+                                for (let i = 0; i < parts.length; i++) {
+                                    if (i === 0) {
+                                        firstGroup.push(parts[i]);
+                                    } else {
+                                        let prevChar = parts[i - 1].slice(-1);
+                                        let currChar = parts[i].charAt(0);
+                                        
+                                        // Ignore slashes between numbers (e.g., dates like 31/01/2026)
+                                        if (!foundSplit && /[0-9]/.test(prevChar) && /[0-9]/.test(currChar)) {
+                                            firstGroup.push(parts[i]);
+                                        } else {
+                                            foundSplit = true;
+                                            secondGroup.push(parts[i]);
+                                        }
+                                    }
+                                }
+                                part1 = firstGroup.join('/').trim();
+                                part2 = secondGroup.join('/').trim();
                             } else if (textWithoutInvoice.includes('\n')) {
-                                const parts = textWithoutInvoice.split('\n');
-                                english = parts[0].trim();
-                                vietnamese = parts.slice(1).join(' ').trim();
+                                let parts = textWithoutInvoice.split('\n');
+                                part1 = parts[0].trim();
+                                part2 = parts.slice(1).join(' ').trim();
+                            }
+
+                            // 4. Auto-detect which part is English and which is Vietnamese
+                            const vietnameseChars = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
+                            
+                            if (part2) {
+                                if (vietnameseChars.test(part1) && !vietnameseChars.test(part2)) {
+                                    vietnamese = part1;
+                                    english = part2;
+                                } else {
+                                    english = part1;
+                                    vietnamese = part2;
+                                }
                             } else {
-                                vietnamese = textWithoutInvoice;
-                                english = "";
+                                if (vietnameseChars.test(part1)) {
+                                    vietnamese = part1;
+                                    english = "";
+                                } else {
+                                    english = part1;
+                                    vietnamese = "";
+                                }
                             }
                         }
 
