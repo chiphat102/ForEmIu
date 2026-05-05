@@ -67,7 +67,7 @@
             text-align: left;
         }
         td {
-            white-space: normal; /* Let the descriptions wrap if they are long */
+            white-space: normal; 
         }
         th {
             background-color: #f8f9fa;
@@ -146,13 +146,11 @@
                     const workbook = XLSX.read(data, {type: 'array'});
                     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
                     
-                    // raw: false forces SheetJS to read formatted text (like dates) rather than raw serial numbers
                     const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
                     if (jsonData.length === 0) throw new Error("Spreadsheet is empty");
 
                     const headers = Object.keys(jsonData[0]);
                     
-                    // Find specific columns by name, or fallback to their standard positions (A=0, B=1, C=2, D=3, G=6)
                     const colB_NgayCT = headers.find(h => h.toLowerCase().includes('ngày c.từ')) || headers[1];
                     const colC_MaCT   = headers.find(h => h.toLowerCase().includes('số c.từ') || h.toLowerCase().includes('mã ct')) || headers[2];
                     const colD_NgayHD = headers.find(h => h.toLowerCase().includes('ngày hđ')) || headers[3];
@@ -163,7 +161,6 @@
                     uniqueCustomers.clear();
 
                     jsonData.forEach(row => {
-                        // Grab core columns directly
                         let ngayCT = row[colB_NgayCT] || "";
                         let maCT = row[colC_MaCT] || "";
                         let ngayHD_col = row[colD_NgayHD] || "";
@@ -182,16 +179,25 @@
                         let dienGiaiChinh = dienGiai;
 
                         if (dienGiai && typeof dienGiai === 'string') {
-                            // 1. Extract Invoice Number (Improved regex to target digits and skip _, #, -)
-                            const invoiceRegex = /(?:HĐ|Hóa đơn|Invoice|Inv|Số)[\s:\-_#]*(\d+)/i;
+                            
+                            // 1. Find the invoice marker and the number right after it
+                            const invoiceRegex = /(?:_?Inv|HĐ|Hóa đơn|Invoice|Số)[\s:\-_#]*(\d+)/i;
                             const invoiceMatch = dienGiai.match(invoiceRegex);
-                            soHD = invoiceMatch ? invoiceMatch[1] : '';
 
-                            // 2. Remove invoice portion AND everything after it
-                            let textWithoutInvoice = dienGiai.replace(/[_\s]*(?:HĐ|Hóa đơn|Invoice|Inv|Số)[\s:\-_#]*\d+.*/i, '').trim();
+                            let textWithoutInvoice = dienGiai;
+
+                            if (invoiceMatch) {
+                                // Extract the invoice digits
+                                soHD = invoiceMatch[1]; 
+                                // 2. Truncate everything from the invoice marker onwards
+                                textWithoutInvoice = dienGiai.substring(0, invoiceMatch.index).trim();
+                            }
+
+                            // Clean up trailing characters left behind
+                            textWithoutInvoice = textWithoutInvoice.replace(/[\s\-_]+$/, '').trim();
                             textWithoutInvoice = textWithoutInvoice.replace(/[\(\)\[\]]/g, '').trim(); 
 
-                            // 3. Separate languages (English first, Vietnamese second)
+                            // 3. Separate languages
                             if (textWithoutInvoice.includes('/')) {
                                 const parts = textWithoutInvoice.split('/');
                                 english = parts[0].trim(); 
@@ -206,7 +212,6 @@
                             }
                         }
 
-                        // Store data in the exact ordered requested
                         globalProcessedData.push({
                             'Ngày CT': ngayCT,
                             'Ngày HĐ': ngayHD_col,
@@ -299,7 +304,6 @@
                 return;
             }
 
-            // Map strict export order
             const finalExportData = dataToExport.map(row => ({
                 'Ngày CT': row['Ngày CT'],
                 'Ngày HĐ': row['Ngày HĐ'],
