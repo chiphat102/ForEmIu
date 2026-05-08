@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced Excel Extractor & Filter</title>
+    <title>Advanced Excel & XML Extractor</title>
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <style>
         body {
@@ -84,11 +84,11 @@
 <body>
 
     <div class="container">
-        <h2>Excel Extractor & Client Filter</h2>
+        <h2>Excel & XML Extractor & Filter</h2>
         
         <div class="controls">
-            <input type="file" id="fileInput" accept=".xls,.xlsx" />
-            <button onclick="processExcel()">1. Load & Process Data</button>
+            <input type="file" id="fileInput" accept=".xls,.xlsx,.xml" />
+            <button onclick="processDataFile()">1. Load & Process Data</button>
             <span id="status"></span>
         </div>
 
@@ -124,12 +124,12 @@
         let uniqueCustomers = new Set();
         let customerColumnKey = "";
 
-        function processExcel() {
+        function processDataFile() {
             const fileInput = document.getElementById('fileInput');
             const statusMessage = document.getElementById('status');
 
             if (fileInput.files.length === 0) {
-                statusMessage.textContent = "Please upload an Excel file.";
+                statusMessage.textContent = "Please upload an Excel or XML file.";
                 statusMessage.className = "error";
                 return;
             }
@@ -143,19 +143,54 @@
             reader.onload = function(e) {
                 try {
                     const data = new Uint8Array(e.target.result);
-                    const workbook = XLSX.read(data, {type: 'array'});
-                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                    
-                    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
-                    if (jsonData.length === 0) throw new Error("Spreadsheet is empty");
+                    let jsonData = [];
+
+                    try {
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                        jsonData = XLSX.utils.sheet_to_json(firstSheet, { defval: "", raw: false });
+                        if (jsonData.length === 0) throw new Error("Empty Excel sheet");
+                    } catch (sheetError) {
+                        const textDecoder = new TextDecoder('utf-8');
+                        const xmlText = textDecoder.decode(data);
+                        
+                        const parser = new DOMParser();
+                        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+                        
+                        if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
+                            throw new Error("Could not parse file as Excel or valid XML.");
+                        }
+
+                        const rows = xmlDoc.documentElement.children;
+                        for (let i = 0; i < rows.length; i++) {
+                            let rowData = {};
+                            let cells = rows[i].children;
+                            for (let j = 0; j < cells.length; j++) {
+                                let tagName = cells[j].tagName.replace(/_/g, ' '); 
+                                rowData[tagName] = cells[j].textContent.trim();
+                            }
+                            if (Object.keys(rowData).length > 0) {
+                                jsonData.push(rowData);
+                            }
+                        }
+                    }
+
+                    if (!jsonData || jsonData.length === 0) throw new Error("Spreadsheet or XML is empty");
 
                     const headers = Object.keys(jsonData[0]);
                     
-                    const colB_NgayCT = headers.find(h => h.toLowerCase().includes('ngày c.từ')) || headers[1];
-                    const colC_MaCT   = headers.find(h => h.toLowerCase().includes('số c.từ') || h.toLowerCase().includes('mã ct')) || headers[2];
-                    const colD_NgayHD = headers.find(h => h.toLowerCase().includes('ngày hđ')) || headers[3];
+                    const normalizeHeader = (h) => {
+                        if (!h) return "";
+                        return h.toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+                    };
                     
-                    customerColumnKey = headers.find(h => h.toLowerCase().includes('tên khách')) || headers[6] || headers[0];
+                    const colB_NgayCT = headers.find(h => normalizeHeader(h).includes('ngày c.từ') || normalizeHeader(h).includes('ngay ct')) || headers[1];
+                    const colC_MaCT   = headers.find(h => normalizeHeader(h).includes('số c.từ') || normalizeHeader(h).includes('mã ct') || normalizeHeader(h).includes('so ct') || normalizeHeader(h).includes('ma ct')) || headers[2];
+                    const colD_NgayHD = headers.find(h => normalizeHeader(h).includes('ngày hđ') || normalizeHeader(h).includes('ngay hd')) || headers[3];
+                    
+                    customerColumnKey = headers.find(h => normalizeHeader(h).includes('tên khách') || normalizeHeader(h).includes('ten khach')) || headers[6] || headers[0];
+                    const dienGiaiKey = headers.find(h => normalizeHeader(h).includes('diễn giải') || normalizeHeader(h).includes('dien giai')) || 'Diễn giải';
+                    const tenNCCKey   = headers.find(h => normalizeHeader(h).includes('tên ncc') || normalizeHeader(h).includes('ten ncc')) || 'Tên NCC';
 
                     globalProcessedData = [];
                     uniqueCustomers.clear();
@@ -165,9 +200,9 @@
                         let maCT = row[colC_MaCT] || "";
                         let ngayHD_col = row[colD_NgayHD] || "";
 
-                        let dienGiai = row['Diễn giải'] || "";
+                        let dienGiai = row[dienGiaiKey] || row['Diễn giải'] || "";
                         let tenKhach = row[customerColumnKey] || "";
-                        let tenNCC = row['Tên NCC'] || tenKhach; 
+                        let tenNCC = row[tenNCCKey] || row['Tên NCC'] || tenKhach; 
 
                         if (tenKhach && typeof tenKhach === 'string' && tenKhach.trim() !== "") {
                             uniqueCustomers.add(tenKhach.trim());
@@ -180,29 +215,11 @@
 
                         if (dienGiai && typeof dienGiai === 'string') {
                             
-                            // 1. Find the invoice marker and the number right after it
-                            const invoiceRegex = /(?:_?Inv|HĐ|Hóa đơn|Invoice|Số)[\s:\-_#]*(\d+)/i;
-                            const invoiceMatch = dienGiai.match(invoiceRegex);
+                            let part1Raw = dienGiai;
+                            let part2Raw = "";
 
-                            let textWithoutInvoice = dienGiai;
-
-                            if (invoiceMatch) {
-                                // Extract the invoice digits
-                                soHD = invoiceMatch[1]; 
-                                // 2. Truncate everything from the invoice marker onwards
-                                textWithoutInvoice = dienGiai.substring(0, invoiceMatch.index).trim();
-                            }
-
-                            // Clean up trailing characters left behind
-                            textWithoutInvoice = textWithoutInvoice.replace(/[\s\-_]+$/, '').trim();
-                            textWithoutInvoice = textWithoutInvoice.replace(/[\(\)\[\]]/g, '').trim(); 
-
-                            // 3. Separate languages smartly (Ignoring dates)
-                            let part1 = textWithoutInvoice;
-                            let part2 = "";
-
-                            if (textWithoutInvoice.includes('/')) {
-                                let parts = textWithoutInvoice.split('/');
+                            if (dienGiai.includes('/')) {
+                                let parts = dienGiai.split('/');
                                 let firstGroup = [];
                                 let secondGroup = [];
                                 let foundSplit = false;
@@ -214,7 +231,6 @@
                                         let prevChar = parts[i - 1].slice(-1);
                                         let currChar = parts[i].charAt(0);
                                         
-                                        // Ignore slashes between numbers (e.g., dates like 31/01/2026)
                                         if (!foundSplit && /[0-9]/.test(prevChar) && /[0-9]/.test(currChar)) {
                                             firstGroup.push(parts[i]);
                                         } else {
@@ -223,27 +239,59 @@
                                         }
                                     }
                                 }
-                                part1 = firstGroup.join('/').trim();
-                                part2 = secondGroup.join('/').trim();
-                            } else if (textWithoutInvoice.includes('\n')) {
-                                let parts = textWithoutInvoice.split('\n');
-                                part1 = parts[0].trim();
-                                part2 = parts.slice(1).join(' ').trim();
+                                part1Raw = firstGroup.join('/').trim();
+                                part2Raw = secondGroup.join('/').trim();
+                            } else if (dienGiai.includes('\n')) {
+                                let parts = dienGiai.split('\n');
+                                part1Raw = parts[0].trim();
+                                part2Raw = parts.slice(1).join(' ').trim();
                             }
 
-                            // 4. Auto-detect which part is English and which is Vietnamese
-                            const vietnameseChars = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i;
+                            const invoiceRegex = /(?:_?Inv|HĐ|Hóa đơn|Invoice|Số)[\s:\-_#]*(\d+)/i;
                             
+                            let part1 = part1Raw;
+                            let part2 = part2Raw;
+
+                            const match1 = part1Raw.match(invoiceRegex);
+                            if (match1) {
+                                soHD = match1[1]; 
+                                part1 = part1Raw.substring(0, match1.index).trim();
+                            }
+
+                            const match2 = part2Raw.match(invoiceRegex);
+                            if (match2 && !soHD) { 
+                                soHD = match2[1];
+                                part2 = part2Raw.substring(0, match2.index).trim();
+                            }
+
+                            part1 = part1.replace(/[\s\-_]+$/, '').replace(/[\(\)\[\]]/g, '').trim();
                             if (part2) {
-                                if (vietnameseChars.test(part1) && !vietnameseChars.test(part2)) {
+                                part2 = part2.replace(/[\s\-_]+$/, '').replace(/[\(\)\[\]]/g, '').trim();
+                            }
+
+                            const vietnameseRegex = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi;
+                            
+                            function countVietnamese(text) {
+                                const matches = text.match(vietnameseRegex);
+                                return matches ? matches.length : 0;
+                            }
+
+                            if (part2) {
+                                const score1 = countVietnamese(part1);
+                                const score2 = countVietnamese(part2);
+
+                                if (score1 > score2) {
                                     vietnamese = part1;
                                     english = part2;
+                                } else if (score2 > score1) {
+                                    english = part1;
+                                    vietnamese = part2;
                                 } else {
                                     english = part1;
                                     vietnamese = part2;
                                 }
                             } else {
-                                if (vietnameseChars.test(part1)) {
+                                if (countVietnamese(part1) > 0) {
                                     vietnamese = part1;
                                     english = "";
                                 } else {
@@ -278,7 +326,7 @@
 
                 } catch (error) {
                     console.error(error);
-                    statusMessage.textContent = "Error processing file. Ensure column names match.";
+                    statusMessage.textContent = "Error processing file: " + error.message;
                     statusMessage.className = "error";
                 }
             };
